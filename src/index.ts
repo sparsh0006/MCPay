@@ -51,8 +51,9 @@ class MCPPaymentServer {
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
       
-      console.error(`\n${'='.repeat(60)}`);
-      console.error(`🔧 Tool called: ${name}`);
+      console.error(`\n${'='.repeat(80)}`);
+      console.error(`🔧 TOOL CALLED: ${name}`);
+      console.error(`${'='.repeat(80)}`);
       console.error(`📥 Arguments:`, JSON.stringify(args, null, 2));
 
       try {
@@ -73,28 +74,28 @@ class MCPPaymentServer {
 
         // Process payment for paid tools
         if (tool.tier !== 'free') {
-          console.error(`\n💰 This is a PAID tool (${tool.tier} tier)`);
+          console.error(`\n💳 PAID TOOL (${tool.tier} tier) - Payment required`);
           const paid = await this.handlePayment(userAddress, tool);
           if (!paid) {
             throw new Error('Payment verification failed. Check logs above for details.');
           }
         } else {
-          console.error(`\n🆓 This is a FREE tool`);
+          console.error(`\n🆓 FREE TOOL - No payment required`);
         }
 
         // Execute tool
         const result = await this.executeTool(name, args, userAddress);
 
-        console.error(`✅ Tool execution completed successfully`);
-        console.error(`${'='.repeat(60)}\n`);
+        console.error(`\n✅ TOOL EXECUTION COMPLETED SUCCESSFULLY`);
+        console.error(`${'='.repeat(80)}\n`);
 
         return {
           content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
         };
 
       } catch (error: any) {
-        console.error(`\n❌ Error: ${error.message}`);
-        console.error(`${'='.repeat(60)}\n`);
+        console.error(`\n❌ ERROR: ${error.message}`);
+        console.error(`${'='.repeat(80)}\n`);
         
         return {
           content: [{
@@ -117,9 +118,11 @@ class MCPPaymentServer {
     if (tool.tier === 'free') {
       desc += ' | 🆓 FREE';
     } else if (tool.tier === 'premium') {
-      desc += ` | 💳 ${tool.priceInCRO} CRO [x402 Auto-Payment]`;
+      // FIXED: Show USDCe instead of CRO
+      desc += ` | 💳 ${tool.priceInCRO} USDCe [x402 Auto-Payment]`;
     } else if (tool.tier === 'ultra') {
-      desc += ` | 💎 ${tool.priceInCRO} CRO [x402 Auto-Payment]`;
+      // FIXED: Show USDCe instead of CRO
+      desc += ` | 💎 ${tool.priceInCRO} USDCe [x402 Auto-Payment]`;
     }
     
     return desc;
@@ -133,31 +136,33 @@ class MCPPaymentServer {
   }
 
   private async handlePayment(userAddress: string, tool: any): Promise<boolean> {
-    console.error(`💰 Checking payment requirements...`);
+    console.error(`\n💰 PAYMENT PROCESSING FOR: ${tool.id}`);
     
     const usdceBalance = await this.paymentService.getBalance(userAddress);
     const croBalance = await this.paymentService.getCROBalance();
     const price = this.paymentService.getToolPrice(tool.id);
     
-    console.error(`   💵 USDCe Balance: ${usdceBalance} USDCe`);
-    console.error(`   💎 CRO Balance: ${croBalance} CRO`);
-    console.error(`   💰 Tool Price: ${price?.cro} CRO (≈${price?.cro} USDCe)`);
+    console.error(`\n📊 BALANCE CHECK:`);
+    console.error(`   💵 USDCe Balance: ${usdceBalance} USDCe (payment token)`);
+    console.error(`   💎 CRO Balance:   ${croBalance} CRO (not used for payment)`);
+    console.error(`   💰 Tool Price:    ${price?.cro} USDCe`);
     
     if (parseFloat(usdceBalance) < (price?.cro || 0)) {
       throw new Error(
-        `Insufficient USDCe balance. You have ${usdceBalance} USDCe but need ${price?.cro} USDCe. ` +
+        `Insufficient USDCe. You have ${usdceBalance} USDCe but need ${price?.cro} USDCe. ` +
         `Get testnet USDCe from: https://faucet.cronos.org`
       );
     }
     
-    console.error(`\n🚀 Initiating x402 payment...`);
+    console.error(`   ✅ Sufficient balance - proceeding with payment\n`);
+    
     const success = await this.paymentService.processPayment(userAddress, tool.id);
     
     if (success) {
-      console.error(`✅ x402 payment completed successfully!`);
+      console.error(`\n✅ PAYMENT COMPLETED SUCCESSFULLY`);
       return true;
     } else {
-      console.error(`❌ x402 payment failed!`);
+      console.error(`\n❌ PAYMENT FAILED`);
       return false;
     }
   }
@@ -174,18 +179,19 @@ class MCPPaymentServer {
         network: process.env.NETWORK || 'testnet',
         capabilities: capabilities,
         balances: {
-          cro: `${croBalance} CRO`,
+          cro: `${croBalance} CRO (for gas only)`,
           usdce: `${usdceBalance} USDCe (payment token)`
         },
         recipientAddress: process.env.PAYMENT_RECIPIENT_ADDRESS || 'not set',
-        note: 'x402 payments are processed in USDCe, not CRO'
+        paymentToken: 'USDCe',
+        note: 'All x402 payments are processed in USDCe, not CRO. Tool prices shown in "CRO" are actually USDCe amounts (1:1 conversion for demo).'
       },
       message: '✅ x402 payment system is operational'
     };
   }
 
   private async executeTool(toolId: string, args: any, userAddress: string) {
-    console.error(`⚙️  Executing ${toolId}...`);
+    console.error(`\n⚙️  EXECUTING TOOL: ${toolId}...`);
     
     switch (toolId) {
       case 'get_cronos_balance': {
@@ -235,7 +241,8 @@ class MCPPaymentServer {
           tool: toolId,
           tier: 'premium',
           paymentMethod: 'x402',
-          paidAmount: '0.5 CRO',
+          paidAmount: '0.5 USDCe', // FIXED: USDCe not CRO
+          paymentToken: 'USDCe',
           data: analysis
         };
       }
@@ -246,7 +253,8 @@ class MCPPaymentServer {
           tool: toolId,
           tier: 'premium',
           paymentMethod: 'x402',
-          paidAmount: '0.25 CRO',
+          paidAmount: '0.25 USDCe', // FIXED: USDCe not CRO
+          paymentToken: 'USDCe',
           data: {
             symbol: args.symbol,
             days: args.days,
@@ -264,7 +272,8 @@ class MCPPaymentServer {
           tool: toolId,
           tier: 'premium',
           paymentMethod: 'x402',
-          paidAmount: '1.0 CRO',
+          paidAmount: '1.0 USDCe', // FIXED: USDCe not CRO
+          paymentToken: 'USDCe',
           data: {
             opportunities: [],
             message: 'No arbitrage found'
@@ -278,7 +287,8 @@ class MCPPaymentServer {
           tool: toolId,
           tier: 'premium',
           paymentMethod: 'x402',
-          paidAmount: '0.4 CRO',
+          paidAmount: '0.4 USDCe', // FIXED: USDCe not CRO
+          paymentToken: 'USDCe',
           data: {
             bestRoute: 'VVS Finance',
             expectedOutput: '0.95'
@@ -292,7 +302,8 @@ class MCPPaymentServer {
           tool: toolId,
           tier: 'ultra',
           paymentMethod: 'x402',
-          paidAmount: '5.0 CRO',
+          paidAmount: '5.0 USDCe', // FIXED: USDCe not CRO
+          paymentToken: 'USDCe',
           data: {
             message: 'Swap ready for execution',
             requiresApproval: true
@@ -306,7 +317,8 @@ class MCPPaymentServer {
           tool: toolId,
           tier: 'ultra',
           paymentMethod: 'x402',
-          paidAmount: '7.5 CRO',
+          paidAmount: '7.5 USDCe', // FIXED: USDCe not CRO
+          paymentToken: 'USDCe',
           data: {
             message: 'Auto-compound ready',
             requiresApproval: true
@@ -324,7 +336,7 @@ class MCPPaymentServer {
       return 'Get testnet USDCe from https://faucet.cronos.org then swap TCRO to USDCe on a testnet DEX';
     }
     if (error.includes('Insufficient balance')) {
-      return 'Please add more funds to your wallet to use this paid tool.';
+      return 'Please add more USDCe to your wallet to use this paid tool.';
     }
     if (error.includes('not found')) {
       return 'Check the tool name and try again.';
@@ -337,16 +349,19 @@ class MCPPaymentServer {
     await this.server.connect(transport);
     
     console.error('');
-    console.error('═══════════════════════════════════════════');
+    console.error('═══════════════════════════════════════════════════════════');
     console.error('🚀 Cronos MCP Server with x402 Payments');
-    console.error('═══════════════════════════════════════════');
+    console.error('═══════════════════════════════════════════════════════════');
     console.error('💳 x402 Facilitator: ENABLED');
     console.error(`📍 Network: ${process.env.NETWORK || 'testnet'}`);
     console.error(`📊 Tools: ${TOOLS.length} total`);
     console.error('💵 Payment Token: USDCe (NOT CRO)');
     console.error('');
+    console.error('ℹ️  Note: Tool prices shown in "CRO" are actually USDCe');
+    console.error('   (1 CRO price = 1 USDCe for demo purposes)');
+    console.error('');
     console.error('✅ Ready for requests!');
-    console.error('═══════════════════════════════════════════');
+    console.error('═══════════════════════════════════════════════════════════');
     console.error('');
   }
 }

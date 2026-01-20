@@ -1,4 +1,4 @@
-import { Facilitator, CronosNetwork } from '@crypto.com/facilitator-client';
+import { Facilitator, CronosNetwork, Contract } from '@crypto.com/facilitator-client';
 import { ethers } from 'ethers';
 import { getProvider } from '../config/blockchain.js';
 
@@ -10,6 +10,7 @@ interface X402PaymentResult {
   verified: boolean;
   settled: boolean;
   error?: string;
+  rawSettleResponse?: any;
 }
 
 export class X402Service {
@@ -18,14 +19,19 @@ export class X402Service {
   private provider: ethers.Provider;
   private privateKey: string;
 
-  // CRITICAL: USDCe contract address on Cronos Testnet
-  private readonly USDCE_ADDRESS = '0xc01efAaF7C5C61bEbFAeb358E1161b537b8bC0e0';
+  // Use Contract enum from SDK
+  private readonly USDCE_CONTRACT: Contract;
   private readonly USDCE_DECIMALS = 6;
 
   constructor(network: 'mainnet' | 'testnet' = 'testnet') {
     this.network = network === 'mainnet' 
       ? CronosNetwork.CronosMainnet 
       : CronosNetwork.CronosTestnet;
+    
+    // Select correct USDCe contract based on network
+    this.USDCE_CONTRACT = network === 'mainnet' 
+      ? Contract.USDCe 
+      : Contract.DevUSDCe;
     
     this.facilitator = new Facilitator({
       network: this.network,
@@ -40,7 +46,7 @@ export class X402Service {
 
     console.error('✅ x402 Facilitator initialized');
     console.error(`   Network: ${network}`);
-    console.error(`   USDCe Address: ${this.USDCE_ADDRESS}`);
+    console.error(`   Payment Token: USDCe at ${this.USDCE_CONTRACT}`);
   }
 
   private getSigner(): ethers.Wallet {
@@ -49,8 +55,8 @@ export class X402Service {
   }
 
   /**
-   * CRITICAL FIX: x402 works with USDCe, NOT native CRO
-   * The SDK documentation shows payment in USDCe (base units)
+   * Execute Payment via x402
+   * Price is in CRO but payment is in USDCe (1:1 conversion for demo)
    */
   async executePayment(
     recipientAddress: string,
@@ -59,114 +65,180 @@ export class X402Service {
     toolId: string
   ): Promise<X402PaymentResult> {
     try {
-      console.error(`\n🚀 [x402] Starting Payment for tool: ${toolId}`);
+      console.error(`\n${'='.repeat(70)}`);
+      console.error(`🚀 [x402 PAYMENT] Starting payment for tool: ${toolId}`);
+      console.error(`${'='.repeat(70)}`);
       
       const signer = this.getSigner();
       const walletAddress = await signer.getAddress();
       
-      // CRITICAL: Convert CRO price to USDCe amount
-      // Assuming 1 CRO ≈ $0.02, so we need to convert
-      // For demo purposes: 1 CRO tool price = 1 USDCe
-      const usdceAmount = Math.floor(amountCRO * 1000000); // Convert to 6 decimals
+      // Convert CRO price to USDCe amount (1:1 for demo)
+      const usdceAmount = Math.floor(amountCRO * 1000000); // 6 decimals
       const paymentAmountWei = usdceAmount.toString();
 
-      console.error(`   👤 From: ${walletAddress}`);
-      console.error(`   📬 To:   ${recipientAddress}`);
-      console.error(`   💰 Price: ${amountCRO} CRO`);
-      console.error(`   💵 USDCe: ${ethers.formatUnits(paymentAmountWei, this.USDCE_DECIMALS)} USDCe`);
+      console.error(`\n📊 PAYMENT DETAILS:`);
+      console.error(`   From Wallet:  ${walletAddress}`);
+      console.error(`   To Recipient: ${recipientAddress}`);
+      console.error(`   Tool Price:   ${amountCRO} CRO (display price)`);
+      console.error(`   Actual Cost:  ${ethers.formatUnits(paymentAmountWei, this.USDCE_DECIMALS)} USDCe`);
+      console.error(`   Description:  ${description}`);
+      console.error(`   Asset:        ${this.USDCE_CONTRACT}`);
       
-      // Check USDCe balance
+      // Check USDCe balance BEFORE payment
       const usdceContract = new ethers.Contract(
-        this.USDCE_ADDRESS,
+        this.USDCE_CONTRACT,
         ['function balanceOf(address) view returns (uint256)'],
         signer
       );
       
       if (typeof usdceContract.balanceOf !== 'function') {
-        throw new Error('balanceOf function is not available on the USDCe contract');
+        throw new Error('usdceContract.balanceOf is undefined');
       }
-      const balance = await usdceContract.balanceOf(walletAddress);
-      const balanceFormatted = ethers.formatUnits(balance, this.USDCE_DECIMALS);
+      const balanceBefore = await usdceContract.balanceOf(walletAddress);
+      const balanceBeforeFormatted = ethers.formatUnits(balanceBefore, this.USDCE_DECIMALS);
       
-      console.error(`   💳 USDCe Balance: ${balanceFormatted} USDCe`);
+      console.error(`\n💰 BALANCE CHECK (BEFORE):`);
+      console.error(`   USDCe Balance: ${balanceBeforeFormatted} USDCe`);
+      console.error(`   Required:      ${ethers.formatUnits(paymentAmountWei, this.USDCE_DECIMALS)} USDCe`);
       
-      if (balance < BigInt(paymentAmountWei)) {
+      if (balanceBefore < BigInt(paymentAmountWei)) {
         throw new Error(
-          `Insufficient USDCe balance. Have: ${balanceFormatted} USDCe, Need: ${ethers.formatUnits(paymentAmountWei, this.USDCE_DECIMALS)} USDCe. ` +
-          `Get testnet USDCe from: https://faucet.cronos.org`
+          `Insufficient USDCe. Have: ${balanceBeforeFormatted} USDCe, Need: ${ethers.formatUnits(paymentAmountWei, this.USDCE_DECIMALS)} USDCe`
         );
       }
 
-      // 1. Generate Payment Header
-      console.error('   🔐 Generating payment header...');
-      const validBefore = Math.floor(Date.now() / 1000) + 3600; // 1 hour
+      console.error(`   ✅ Sufficient balance available`);
+
+      // STEP 1: Generate Payment Header
+      console.error(`\n🔐 STEP 1: Generating EIP-3009 payment header...`);
+      const validBefore = Math.floor(Date.now() / 1000) + 3600;
       
-      // FIX: Cast signer to 'any' to avoid type mismatch with Facilitator SDK
       const header = await this.facilitator.generatePaymentHeader({
         to: recipientAddress,
         value: paymentAmountWei,
-        signer: signer as any, // TypeScript workaround for SDK compatibility
+        signer: signer as any,
         validBefore: validBefore,
+        asset: this.USDCE_CONTRACT, // FIXED: Added asset parameter
       });
 
-      console.error('   ✅ Header generated');
+      console.error(`   ✅ Header generated (${header.length} chars)`);
 
-      // 2. Generate Requirements
-      console.error('   📝 Generating requirements...');
+      // STEP 2: Generate Requirements
+      console.error(`\n📝 STEP 2: Generating payment requirements...`);
       const requirements = this.facilitator.generatePaymentRequirements({
         payTo: recipientAddress,
-        description: `${description} (Tool: ${toolId})`,
+        description: `${description} (${toolId})`,
         maxAmountRequired: paymentAmountWei,
+        asset: this.USDCE_CONTRACT, // FIXED: Added asset parameter
       });
 
-      console.error('   ✅ Requirements:', JSON.stringify(requirements, null, 2));
+      console.error(`   ✅ Requirements generated:`);
+      console.error(`   ${JSON.stringify(requirements, null, 6)}`);
 
-      // 3. Build Verify Request
-      console.error('   🔨 Building verification request...');
+      // STEP 3: Build Verify Request
+      console.error(`\n🔨 STEP 3: Building verification request...`);
       const body = this.facilitator.buildVerifyRequest(header, requirements);
+      console.error(`   ✅ Request body built`);
 
-      // 4. Verify Payment Off-Chain
-      console.error('   🔍 Verifying payment...');
+      // STEP 4: Verify Payment
+      console.error(`\n🔍 STEP 4: Verifying payment with Facilitator...`);
       const verify = await this.facilitator.verifyPayment(body);
       
-      console.error('   📋 Verify Response:', JSON.stringify(verify, null, 2));
+      console.error(`   📋 Verification Response:`);
+      console.error(`   ${JSON.stringify(verify, null, 6)}`);
       
       if (!verify.isValid) {
-        console.error('   ❌ Verification FAILED');
-        throw new Error(`Payment verification failed: ${JSON.stringify(verify)}`);
+        console.error(`\n   ❌ VERIFICATION FAILED`);
+        console.error(`   Reason: ${verify.invalidReason || 'Unknown'}`);
+        throw new Error(`Verification failed: ${verify.invalidReason || 'Unknown reason'}`);
       }
 
-      console.error('   ✅ Payment verified!');
+      console.error(`   ✅ Payment verified successfully!`);
 
-      // 5. Settle Payment On-Chain
-      console.error('   ⚡️ Settling payment on-chain...');
+      // STEP 5: Settle Payment On-Chain
+      console.error(`\n⚡️ STEP 5: Settling payment on-chain via Facilitator...`);
+      console.error(`   Please wait for blockchain confirmation...`);
+      
       const settle = await this.facilitator.settlePayment(body);
       
-      console.error('   📋 Settle Response:', JSON.stringify(settle, null, 2));
+      console.error(`\n   📋 Settlement Response:`);
+      console.error(`   ${JSON.stringify(settle, null, 6)}`);
       
-      if (settle.txHash) {
-        console.error('\n   🎉 PAYMENT SUCCESS!');
-        console.error(`   🔗 Hash: ${settle.txHash}`);
-        console.error(`   🔍 Explorer: https://explorer.cronos.org/testnet/tx/${settle.txHash}`);
+      // FIXED: Access txHash correctly from X402SettleResponse
+      const txHash = settle.txHash;
+      
+      if (txHash) {
+        console.error(`\n   🎉 PAYMENT SETTLED ON-CHAIN!`);
+        console.error(`   🔗 Transaction Hash: ${txHash}`);
+        console.error(`   📍 From: ${settle.from || 'N/A'}`);
+        console.error(`   📍 To: ${settle.to || 'N/A'}`);
+        console.error(`   💰 Value: ${settle.value || 'N/A'}`);
+        console.error(`   🔢 Block: ${settle.blockNumber || 'pending'}`);
+        console.error(`   🌐 Network: ${settle.network}`);
+        console.error(`   🔍 Explorer: https://explorer.cronos.org/testnet/tx/${txHash}`);
+        
+        // Check balance AFTER payment
+        const balanceAfter = await usdceContract.balanceOf(walletAddress);
+        const balanceAfterFormatted = ethers.formatUnits(balanceAfter, this.USDCE_DECIMALS);
+        const spent = ethers.formatUnits(balanceBefore - balanceAfter, this.USDCE_DECIMALS);
+        
+        console.error(`\n💰 BALANCE CHECK (AFTER):`);
+        console.error(`   Before:  ${balanceBeforeFormatted} USDCe`);
+        console.error(`   After:   ${balanceAfterFormatted} USDCe`);
+        console.error(`   Spent:   ${spent} USDCe`);
+        
+        console.error(`\n${'='.repeat(70)}`);
+        console.error(`✅ PAYMENT COMPLETED SUCCESSFULLY`);
+        console.error(`${'='.repeat(70)}\n`);
         
         return {
           success: true,
-          txHash: settle.txHash,
-          amount: amountCRO.toString(),
+          txHash: txHash,
+          amount: ethers.formatUnits(paymentAmountWei, this.USDCE_DECIMALS),
           timestamp: Math.floor(Date.now() / 1000),
           verified: true,
           settled: true,
+          rawSettleResponse: settle
         };
       } else {
-        console.error('   ❌ Settlement returned no hash');
-        throw new Error('Settlement completed but no transaction hash returned');
+        console.error(`\n   ⚠️  Settlement response received but no transaction hash`);
+        console.error(`   Event: ${settle.event}`);
+        console.error(`   Error: ${settle.error || 'None'}`);
+        
+        // Check if balance was deducted anyway
+        const balanceAfter = await usdceContract.balanceOf(walletAddress);
+        const balanceAfterFormatted = ethers.formatUnits(balanceAfter, this.USDCE_DECIMALS);
+        
+        if (balanceAfter < balanceBefore) {
+          const spent = ethers.formatUnits(balanceBefore - balanceAfter, this.USDCE_DECIMALS);
+          console.error(`\n   💰 USDCe WAS DEDUCTED: ${spent} USDCe`);
+          console.error(`   Balance Before: ${balanceBeforeFormatted} USDCe`);
+          console.error(`   Balance After:  ${balanceAfterFormatted} USDCe`);
+          console.error(`   ✅ Payment processed but txHash not in response`);
+          
+          return {
+            success: true,
+            txHash: 'Payment completed - check wallet history',
+            amount: ethers.formatUnits(paymentAmountWei, this.USDCE_DECIMALS),
+            timestamp: Math.floor(Date.now() / 1000),
+            verified: true,
+            settled: true,
+            rawSettleResponse: settle
+          };
+        }
+        
+        throw new Error(settle.error || 'Settlement failed - no txHash and balance unchanged');
       }
 
     } catch (error: any) {
-      console.error('\n   ❌ PAYMENT ERROR:', error.message);
+      console.error(`\n${'='.repeat(70)}`);
+      console.error(`❌ PAYMENT ERROR`);
+      console.error(`${'='.repeat(70)}`);
+      console.error(`   Error: ${error.message}`);
       if (error.stack) {
-        console.error('   Stack:', error.stack);
+        console.error(`   Stack: ${error.stack}`);
       }
+      console.error(`${'='.repeat(70)}\n`);
       
       return {
         success: false,
@@ -179,8 +251,6 @@ export class X402Service {
     }
   }
 
-  // --- Required Service Methods ---
-
   async getSupported() {
     try {
       return await this.facilitator.getSupported();
@@ -191,7 +261,7 @@ export class X402Service {
   }
 
   async executeToolPayment(recipient: string, toolId: string, price: number) {
-    return this.executePayment(recipient, price, `Payment for ${toolId}`, toolId);
+    return this.executePayment(recipient, price, `MCP Tool Payment: ${toolId}`, toolId);
   }
 
   async verifyPaymentOnly(recipient: string, amountCRO: number, desc: string): Promise<boolean> {
@@ -199,18 +269,19 @@ export class X402Service {
       const signer = this.getSigner();
       const usdceAmount = Math.floor(amountCRO * 1000000).toString();
       
-      // FIX: Cast signer to 'any' to avoid type mismatch
       const header = await this.facilitator.generatePaymentHeader({
         to: recipient,
         value: usdceAmount,
-        signer: signer as any, // TypeScript workaround
-        validBefore: Math.floor(Date.now() / 1000) + 3600
+        signer: signer as any,
+        validBefore: Math.floor(Date.now() / 1000) + 3600,
+        asset: this.USDCE_CONTRACT,
       });
       
       const req = this.facilitator.generatePaymentRequirements({
         payTo: recipient,
         description: desc,
-        maxAmountRequired: usdceAmount
+        maxAmountRequired: usdceAmount,
+        asset: this.USDCE_CONTRACT,
       });
       
       const body = this.facilitator.buildVerifyRequest(header, req);
@@ -237,11 +308,14 @@ export class X402Service {
     try {
       const signer = this.getSigner();
       const usdceContract = new ethers.Contract(
-        this.USDCE_ADDRESS,
+        this.USDCE_CONTRACT,
         ['function balanceOf(address) view returns (uint256)'],
         signer
-      ) as ethers.Contract & { balanceOf(address: string): Promise<bigint> };
+      );
       
+      if (typeof usdceContract.balanceOf !== 'function') {
+        throw new Error('usdceContract.balanceOf is undefined');
+      }
       const balance = await usdceContract.balanceOf(await signer.getAddress());
       return ethers.formatUnits(balance, this.USDCE_DECIMALS);
     } catch (e) {
@@ -254,13 +328,13 @@ export class X402Service {
     try {
       const signer = this.getSigner();
       const usdceContract = new ethers.Contract(
-        this.USDCE_ADDRESS,
+        this.USDCE_CONTRACT,
         ['function balanceOf(address) view returns (uint256)'],
         signer
       );
       
       if (typeof usdceContract.balanceOf !== 'function') {
-        throw new Error('balanceOf function is not available on the USDCe contract');
+        throw new Error('usdceContract.balanceOf is undefined');
       }
       const balance = await usdceContract.balanceOf(await signer.getAddress());
       const required = BigInt(Math.floor(amountCRO * 1000000));
