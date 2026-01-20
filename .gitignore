@@ -22,6 +22,12 @@ lib-cov/
 coverage/
 *.lcov
 
+# TypeScript build outputs
+*.js
+*.js.map
+*.d.ts
+*.d.ts.map
+
 # Build output
 dist/
 build/
