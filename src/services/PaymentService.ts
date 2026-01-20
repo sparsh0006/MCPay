@@ -14,7 +14,7 @@ export class PaymentService {
     }
   }
 
-  async processPayment(userAddress: string, toolId: string): Promise<boolean> {
+  async processPayment(userAddress: string, toolId: string): Promise<any> {
     try {
       const tool = TOOLS.find(t => t.id === toolId);
       
@@ -23,12 +23,8 @@ export class PaymentService {
       }
 
       if (tool.tier === 'free') {
-        return true;
+        return { success: true, paid: false };
       }
-
-      console.error(`\n💳 [PaymentService] Processing payment for ${toolId}`);
-      console.error(`   Recipient: ${this.recipientAddress}`);
-      console.error(`   Amount: ${tool.priceInCRO} CRO`);
 
       const result = await this.x402Service.executeToolPayment(
         this.recipientAddress,
@@ -37,16 +33,27 @@ export class PaymentService {
       );
 
       if (!result.success) {
-        console.error(`❌ Payment failed: ${result.error}`);
         throw new Error(result.error || 'x402 payment execution failed');
       }
 
-      console.error(`✅ Payment successful: ${result.txHash}`);
-      return true;
+      // Return full payment details
+      return {
+        success: true,
+        paid: true,
+        payment: {
+          txHash: result.txHash,
+          explorerUrl: result.explorerUrl,
+          amount: result.amount,
+          amountSpent: result.amountSpent,
+          balanceBefore: result.balanceBefore,
+          balanceAfter: result.balanceAfter,
+          timestamp: result.timestamp,
+        }
+      };
 
     } catch (error: any) {
       console.error('❌ Payment processing error:', error.message);
-      return false;
+      throw error;
     }
   }
 
@@ -68,7 +75,6 @@ export class PaymentService {
 
   async getBalance(userAddress: string): Promise<string> {
     try {
-      // Return USDCe balance (the actual payment token)
       return await this.x402Service.getUSDCeBalance();
     } catch (error) {
       console.error('Error getting balance:', error);
