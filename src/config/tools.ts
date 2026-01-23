@@ -221,5 +221,35 @@ export const TOOLS: ToolDefinition[] = [
       },
       required: ['protocol', 'poolAddress']
     }
+  },
+  {
+  id: 'vvs_swap',
+  name: 'VVS Finance Swap',
+  description: 'Get quote or execute swap using VVS Finance DEX with best route optimization',
+  tier: 'ultra',
+  priceInCRO: 3.0,
+  priceInUSDC: 0.06,
+  inputSchema: {
+    type: 'object',
+    properties: {
+      inputToken: {
+        type: 'string',
+        description: 'Input token symbol or address (e.g., CRO, USDC, NATIVE)'
+      },
+      outputToken: {
+        type: 'string',
+        description: 'Output token symbol or address'
+      },
+      amountIn: {
+        type: 'string',
+        description: 'Amount to swap'
+      },
+      executeImmediately: {
+        type: 'boolean',
+        description: 'Set to true to execute swap, false for quote only'
+      }
+    },
+    required: ['inputToken', 'outputToken', 'amountIn']
   }
+}
 ];

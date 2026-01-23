@@ -309,6 +309,24 @@ class MCPPaymentServer {
 
       /* ---------- ULTRA TOOLS ---------- */
 
+      case 'vvs_swap': {
+        const { vvsSwap } = await import('./tools/ultra/vvsSwap.js');
+        const swapResult = await vvsSwap(
+          args.inputToken,
+          args.outputToken,
+          args.amountIn,
+          args.executeImmediately || false
+        );
+        return {
+          success: true,
+          tool: toolId,
+          tier: 'ultra',
+          paymentMethod: 'x402',
+          paymentDetails: paymentInfo,
+          data: swapResult
+        };
+      }
+
       case 'execute_token_swap':
         return {
           success: true,
